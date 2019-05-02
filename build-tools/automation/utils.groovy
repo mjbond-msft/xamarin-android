@@ -1,3 +1,4 @@
+import java.net.URL
 import groovy.json.JsonSlurper
 
 def stageWithTimeout(stageName, timeoutValue, timeoutUnit, directory, fatal, ctAttempts = 0, Closure body) {
