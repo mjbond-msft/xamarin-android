@@ -149,7 +149,7 @@ timestamps {
 
         utils.stageWithTimeout('prepare deps', 30, 'MINUTES', XADir, true) {    // Typically takes less than 2 minutes, but can take longer if any prereqs need to be provisioned
             if (isCommercial) {
-                sh "make prepare-external-git-dependencies"
+                sh "make prepare-external-git-dependencies PREPARE_CI=1 V=1 "
 
                 utils.stageWithTimeout('provisionator', 30, 'MINUTES', "${commercialPath}/build-tools/provisionator", true) {
                     sh('./provisionator.sh profile.csx -v')
@@ -166,16 +166,17 @@ timestamps {
                     }
                 }
             }
-
-            sh "make prepare-deps CONFIGURATION=${env.BuildFlavor} V=1 MSBUILD_ARGS='$EXTRA_MSBUILD_ARGS'"
         }
 
         utils.stageWithTimeout('build', 6, 'HOURS', XADir, true) {    // Typically takes less than one hour except a build on a new bot to populate local caches can take several hours
-            sh "make prepare ${buildTarget} CONFIGURATION=${env.BuildFlavor} V=1 MSBUILD_ARGS='$EXTRA_MSBUILD_ARGS'"
+            // The 'prepare*' targets must run separately to '${buildTarget}` as preparation generates the 'rules.mk' file conditionally included by
+            // Makefile and it will **NOT** be included if we call e.g `make prepare jenkins` so the 'jenkns' target will **NOT** build all the supported
+            // targets and architectures leading to test errors later on (e.g. in EmbeddedDSOs tests)
+            sh "make prepare-update-mono CONFIGURATION=${env.BuildFlavor} V=1 PREPARE_CI=1 MSBUILD_ARGS='$EXTRA_MSBUILD_ARGS'"
+            sh "make prepare CONFIGURATION=${env.BuildFlavor} V=1 PREPARE_CI=1 MSBUILD_ARGS='$EXTRA_MSBUILD_ARGS'"
+            sh "make ${buildTarget} CONFIGURATION=${env.BuildFlavor} V=1 MSBUILD_ARGS='$EXTRA_MSBUILD_ARGS'"
 
             if (isCommercial) {
-                sh "cp bin/${env.BuildFlavor}/bundle-*.zip ${packagePath}"
-
                 sh '''
                     VERSION=`LANG=C; export LANG && git log --no-color --first-parent -n1 --pretty=format:%ct`
                     echo "d1ec039f-f3db-468b-a508-896d7c382999 $VERSION" > ../package/updateinfo
@@ -239,7 +240,7 @@ timestamps {
                 sh "make package-build-status CONFIGURATION=${env.BuildFlavor} V=1"
 
                 if (isCommercial) {
-                    sh "cp ${XADir}/bin/Build${env.BuildFlavor}/xa-build-status-*.zip ${packagePath}"
+                    sh "cp bin/Build${env.BuildFlavor}/xa-build-status-*.zip ${packagePath}"
                 }
             } catch (error) {
                 echo "ERROR : NON-FATAL : processBuildStatus: Unexpected error: ${error}"
@@ -255,10 +256,8 @@ timestamps {
             }
 
             if (!isPr) {
-                if (isCommercial) {
-                    publishBuildFilePaths = "${publishBuildFilePaths},bundle-*.zip"
-                } else {
-                    publishBuildFilePaths = "${publishBuildFilePaths},${XADir}/bin/${env.BuildFlavor}/bundle-*.zip"
+                if (!isCommercial) {
+                    publishBuildFilePaths = "${publishBuildFilePaths},${XADir}/bin/${env.BuildFlavor}/bundle-*"
                 }
             }
 

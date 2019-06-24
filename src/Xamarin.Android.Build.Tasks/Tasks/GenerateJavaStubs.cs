@@ -38,7 +38,7 @@ namespace Xamarin.Android.Tasks
 		public ITaskItem [] FrameworkDirectories { get; set; }
 
 		[Required]
-		public string SupportedAbis { get; set; }
+		public string [] SupportedAbis { get; set; }
 
 		public string ManifestTemplate { get; set; }
 		public string[] MergedManifestDocuments { get; set; }
@@ -310,8 +310,10 @@ namespace Xamarin.Android.Tasks
 		void WriteTypeMappings (List<TypeDefinition> types)
 		{
 			void logger (TraceLevel level, string value) => Log.LogDebugMessage (value);
-			TypeNameMapGenerator generator = new TypeNameMapGenerator (ResolvedAssemblies.Select (p => p.ItemSpec), logger);
-			using (var gen = generator) {
+			TypeNameMapGenerator createTypeMapGenerator () => UseSharedRuntime ?
+				new TypeNameMapGenerator (types, logger) :
+				new TypeNameMapGenerator (ResolvedAssemblies.Select (p => p.ItemSpec), logger);
+			using (var gen = createTypeMapGenerator ()) {
 				using (var ms = new MemoryStream ()) {
 					UpdateWhenChanged (Path.Combine (OutputDirectory, "typemap.jm"), "jm", ms, gen.WriteJavaToManaged);
 					UpdateWhenChanged (Path.Combine (OutputDirectory, "typemap.mj"), "mj", ms, gen.WriteManagedToJava);
@@ -338,7 +340,7 @@ namespace Xamarin.Android.Tasks
 				string dataFileName = Path.GetFileName (dataFilePath);
 				NativeAssemblerTargetProvider asmTargetProvider;
 				var utf8Encoding = new UTF8Encoding (false);
-				foreach (string abi in SupportedAbis.Split (new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)) {
+				foreach (string abi in SupportedAbis) {
 					ms.SetLength (0);
 					switch (abi.Trim ()) {
 						case "armeabi-v7a":

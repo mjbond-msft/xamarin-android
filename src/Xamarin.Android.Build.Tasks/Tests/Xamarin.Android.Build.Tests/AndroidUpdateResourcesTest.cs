@@ -464,6 +464,17 @@ namespace UnnamedProject
 					"Warning while processing resources should not have been raised.");
 				Assert.IsTrue (b.Build (proj, doNotCleanupOnUpdate: true), "Build should have succeeded.");
 				Assert.IsTrue (b.Output.IsTargetSkipped ("_GenerateJavaStubs"), "Target _GenerateJavaStubs should have been skipped");
+
+				lib.Touch ("CustomTextView.cs");
+
+				Assert.IsTrue (libb.Build (lib, doNotCleanupOnUpdate: true, saveProject: false), "second library build should have succeeded.");
+				Assert.IsTrue (b.Build (proj, doNotCleanupOnUpdate: true, saveProject: false), "second app build should have succeeded.");
+
+				using (var zip = ZipHelper.OpenZip (packaged_resources)) {
+					CheckCustomView (zip, intermediate, "lp", "0", "jl", "res", "layout", "custom_text_lib.xml");
+					CheckCustomView (zip, intermediate, "res", "layout", "custom_text_app.xml");
+				}
+
 				Assert.IsTrue (b.Clean (proj), "Clean should have succeeded.");
 			}
 		}
@@ -568,6 +579,9 @@ namespace UnnamedProject
 	android:layout_width=""fill_parent"" 
 	android:layout_height=""wrap_content"" 
 	android:text=""Hello""
+	/>
+<TextView
+	android:id=""@+id/myText""
 	/>
 </LinearLayout>";
 				Assert.IsTrue (b.Build (proj), "Build should have succeeded.");

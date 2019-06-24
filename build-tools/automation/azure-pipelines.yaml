@@ -1,46 +1,59 @@
 # Xamarin.Android Pipeline
 
+name: $(Build.SourceBranch)-$(Build.SourceVersion)-$(Rev:r)
+
 trigger:
   - master
   - d16-*
 
+# External yaml template files
+resources:
+  repositories:
+  - repository: yaml
+    type: github
+    name: xamarin/yaml-templates
+    ref: refs/heads/master
+    endpoint: xamarin
+
 # Global variables
 variables:
   BundleArtifactName: bundle
+  InstallerArtifactName: unsigned-installers
   AutoProvisionArgs: /p:AutoProvision=True /p:AutoProvisionUsesSudo=True /p:IgnoreMaxMonoVersion=False
+  AndroidTargetAbiArgs: >-
+    /p:AndroidSupportedTargetJitAbis=armeabi-v7a:arm64-v8a:x86:x86_64
+    /p:AndroidSupportedTargetAotAbis=armeabi-v7a:arm64:x86:x86_64:win-armeabi-v7a:win-arm64:win-x86:win-x86_64
 
 # Stage and Job "display names" are shortened because they are combined to form the name of the corresponding GitHub check.
 stages:
 - stage: prepare
   displayName: Prepare
   variables:
-    MSBuildAbiArgs: >-
-      /p:AndroidSupportedTargetJitAbis=armeabi-v7a:arm64-v8a:x86:x86_64
-      /p:AndroidSupportedHostJitAbis=Darwin:mxe-Win32:mxe-Win64
-      /p:AndroidSupportedTargetAotAbis=armeabi-v7a:arm64:x86:x86_64:win-armeabi-v7a:win-arm64:win-x86:win-x86_64
+    MSBuildAbiArgs: $(AndroidTargetAbiArgs) /p:AndroidSupportedHostJitAbis=Darwin:mxe-Win32:mxe-Win64
   jobs:
   - job: create_bundle
     displayName: Bundle
     pool: $(XA.Build.Mac.Pool)
     timeoutInMinutes: 60
     cancelTimeoutInMinutes: 5
+    workspace:
+      clean: all
     steps:
-      # Ensure the correct Mono.Cecil reference overrides are set before creating the bundle.
-    - script: make prepare-props V=1 CONFIGURATION=$(XA.Build.Configuration) MSBUILD_ARGS="$(AutoProvisionArgs) $(MSBuildAbiArgs)"
-      displayName: make prepare-props
+    - checkout: self
+      submodules: recursive
 
-    - task: MSBuild@1
+      # Update Mono in a separate step since xaprepare uses it as well and it will crash when Mono it runs with is updated
+      # The 'prepare' step creates the bundle
+    - script: |
+        make prepare-update-mono PREPARE_CI=1 V=1 CONFIGURATION=$(XA.Build.Configuration) MSBUILD_ARGS="$(AutoProvisionArgs) $(MSBuildAbiArgs)"
+        make prepare PREPARE_CI=1 PREPARE_ARGS="--copy-bundle-to=bin/$(XA.Build.Configuration)" V=1 CONFIGURATION=$(XA.Build.Configuration) MSBUILD_ARGS="$(AutoProvisionArgs) $(MSBuildAbiArgs)"
       displayName: create bundle
-      inputs:
-        solution: build-tools/create-bundle/create-bundle.csproj
-        configuration: $(XA.Build.Configuration)
-        msbuildArguments: /bl:$(System.DefaultWorkingDirectory)/bin/Build$(XA.Build.Configuration)/msbuild-createbundle.binlog $(MSBuildAbiArgs)
 
     - task: CopyFiles@2
       displayName: copy bundle
       inputs:
         sourceFolder: bin/$(XA.Build.Configuration)
-        contents: bundle-*.zip
+        contents: bundle-*.7z
         targetFolder: $(Build.ArtifactStagingDirectory)
 
     - task: PublishPipelineArtifact@0
@@ -54,7 +67,7 @@ stages:
       inputs:
         solution: build-tools/Xamarin.Android.Tools.BootstrapTasks/Xamarin.Android.Tools.BootstrapTasks.csproj
         configuration: $(XA.Build.Configuration)
-        msbuildArguments: /t:ZipBuildStatus /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory)/results
+        msbuildArguments: /t:Build,ZipBuildStatus /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory)/results
       condition: always()
 
     - task: PublishPipelineArtifact@0
@@ -73,15 +86,20 @@ stages:
     pool: $(XA.Build.Mac.Pool)
     timeoutInMinutes: 240
     cancelTimeoutInMinutes: 5
+    workspace:
+      clean: all
     variables:
       JAVA_HOME: /Library/Java/JavaVirtualMachines/jdk1.8.0_144.jdk/Contents/Home/
     steps:
+    - checkout: self
+      submodules: recursive
+
     - task: DownloadPipelineArtifact@1
       inputs:
         artifactName: $(BundleArtifactName)
         downloadPath: $(System.DefaultWorkingDirectory)
 
-    - script: make prepare-external-git-dependencies CONFIGURATION=$(XA.Build.Configuration)
+    - script: make prepare-external-git-dependencies PREPARE_CI=1 CONFIGURATION=$(XA.Build.Configuration)
       displayName: make prepare-commercial
       condition: eq(variables['XA.Commercial.Build'], 'true')
       env:
@@ -95,11 +113,12 @@ stages:
         provisioning_script: $(System.DefaultWorkingDirectory)/external/monodroid/build-tools/provisionator/profile.csx
         provisioning_extra_args: -vv
 
-    - script: make prepare-deps V=1 CONFIGURATION=$(XA.Build.Configuration) MSBUILD_ARGS="$(AutoProvisionArgs)"
-      displayName: make prepare-deps
+    - script: make prepare-update-mono V=1 CONFIGURATION=$(XA.Build.Configuration) PREPARE_CI=1 PREPARE_ARGS="--bundle-path=$(System.DefaultWorkingDirectory)" MSBUILD_ARGS="$(AutoProvisionArgs) /p:BundleRootPath=$(System.DefaultWorkingDirectory)"
+      displayName: make prepare-update-mono
 
-    - script: make prepare jenkins V=1 CONFIGURATION=$(XA.Build.Configuration) MSBUILD_ARGS="$(AutoProvisionArgs) /p:BundleRootPath=$(System.DefaultWorkingDirectory)"
-      displayName: make prepare jenkins
+      # No need to add `prepare` to the command line, the `jenkins` rule depends on `prepare-jenkins` which will run the bootstrapper
+    - script: make jenkins V=1 CONFIGURATION=$(XA.Build.Configuration) PREPARE_CI=1 PREPARE_ARGS="--bundle-path=$(System.DefaultWorkingDirectory)" MSBUILD_ARGS="$(AutoProvisionArgs) /p:BundleRootPath=$(System.DefaultWorkingDirectory)"
+      displayName: make jenkins
 
     - script: make create-installers V=1 CONFIGURATION=$(XA.Build.Configuration)
       displayName: make create-installers
@@ -113,7 +132,7 @@ stages:
     - task: PublishPipelineArtifact@0
       displayName: upload unsigned installers
       inputs:
-        artifactName: unsigned
+        artifactName: $(InstallerArtifactName)
         targetPath: bin/Build$(XA.Build.Configuration)/unsigned-installers
 
     - task: MSBuild@1
@@ -121,7 +140,7 @@ stages:
       inputs:
         solution: build-tools/Xamarin.Android.Tools.BootstrapTasks/Xamarin.Android.Tools.BootstrapTasks.csproj
         configuration: $(XA.Build.Configuration)
-        msbuildArguments: /t:ZipBuildStatus /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory)
+        msbuildArguments: /t:Build,ZipBuildStatus /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory)
       condition: always()
 
     - task: PublishPipelineArtifact@0
@@ -141,7 +160,14 @@ stages:
     pool: $(XA.Build.Win.Pool)
     timeoutInMinutes: 360
     cancelTimeoutInMinutes: 5
+    workspace:
+      clean: all
+    variables:
+      JAVA_HOME: '%HOMEDRIVE%%HOMEPATH%\android-toolchain\jdk'
     steps:
+    - checkout: self
+      submodules: recursive
+
     - task: DownloadPipelineArtifact@1
       inputs:
         artifactName: $(BundleArtifactName)
@@ -152,27 +178,27 @@ stages:
       inputs:
         solution: Xamarin.Android.sln
         configuration: $(XA.Build.Configuration)
-        msbuildArguments: /t:Prepare /bl:$(System.DefaultWorkingDirectory)\bin\Build$(XA.Build.Configuration)\msbuild-prepare.binlog /p:BundleRootPath=$(System.DefaultWorkingDirectory)
+        msbuildArguments: $(AutoProvisionArgs) $(AndroidTargetAbiArgs) /t:Prepare /bl:$(System.DefaultWorkingDirectory)\bin\Build$(XA.Build.Configuration)\msbuild-prepare.binlog /p:BundleRootPath=$(System.DefaultWorkingDirectory)
 
     - task: MSBuild@1
       displayName: msbuild Xamarin.Android /t:Build
       inputs:
         solution: Xamarin.Android.sln
         configuration: $(XA.Build.Configuration)
-        msbuildArguments: /t:Build /bl:$(System.DefaultWorkingDirectory)\bin\Build$(XA.Build.Configuration)\msbuild-build.binlog /p:BundleRootPath=$(System.DefaultWorkingDirectory)
+        msbuildArguments: /t:Build /bl:$(System.DefaultWorkingDirectory)\bin\Build$(XA.Build.Configuration)\msbuild-build.binlog /p:BundleRootPath=$(System.DefaultWorkingDirectory) $(AndroidTargetAbiArgs)
 
     - task: MSBuild@1
       displayName: msbuild create-vsix
       inputs:
         solution: build-tools\create-vsix\create-vsix.csproj
         configuration: $(XA.Build.Configuration)
-        msbuildArguments: /p:CreateVsixContainer=True /p:ZipPackageCompressionLevel=Normal /bl:$(System.DefaultWorkingDirectory)\bin\Build$(XA.Build.Configuration)\msbuild-create-vsix.binlog
+        msbuildArguments: /p:CreateVsixContainer=True /p:ZipPackageCompressionLevel=Normal /bl:$(System.DefaultWorkingDirectory)\bin\Build$(XA.Build.Configuration)\msbuild-create-vsix.binlog $(AndroidTargetAbiArgs)
 
     - task: CmdLine@1
       displayName: xabuild Xamarin.Android-Tests
       inputs:
         filename: bin\$(XA.Build.Configuration)\bin\xabuild.exe
-        arguments: Xamarin.Android-Tests.sln /p:Configuration=$(XA.Build.Configuration) /p:XAIntegratedTests=False /bl:$(System.DefaultWorkingDirectory)\bin\Test$(XA.Build.Configuration)\msbuild-build-tests.binlog
+        arguments: Xamarin.Android-Tests.sln /p:Configuration=$(XA.Build.Configuration) /p:XAIntegratedTests=False /bl:$(System.DefaultWorkingDirectory)\bin\Test$(XA.Build.Configuration)\msbuild-build-tests.binlog $(AndroidTargetAbiArgs)
 
     - task: MSBuild@1
       displayName: nunit Xamarin.Android.Build.Tests
@@ -199,7 +225,6 @@ stages:
         testResultsFormat: NUnit
         testResultsFiles: TestResult-*.xml
         testRunTitle: xamarin-android
-        failTaskOnFailedTests: true
       condition: succeededOrFailed()
 
     - task: MSBuild@1
@@ -207,7 +232,7 @@ stages:
       inputs:
         solution: build-tools\Xamarin.Android.Tools.BootstrapTasks\Xamarin.Android.Tools.BootstrapTasks.csproj
         configuration: $(XA.Build.Configuration)
-        msbuildArguments: /t:ZipBuildStatus;ZipTestResults /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory) /p:TestResultZipOutputPath=$(Build.ArtifactStagingDirectory)
+        msbuildArguments: /t:Build,ZipBuildStatus,ZipTestResults /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory) /p:TestResultZipOutputPath=$(Build.ArtifactStagingDirectory)
       condition: always()
 
     - task: PublishPipelineArtifact@0
@@ -216,3 +241,293 @@ stages:
         artifactName: win-build-test-results
         targetPath: $(Build.ArtifactStagingDirectory)
       condition: always()
+
+- stage: test
+  displayName: Test
+  dependsOn: mac_build
+  jobs:
+  # Test APK Instrumentation
+  - job: mac_apk_tests
+    displayName: APK Instrumentation
+    pool: $(XA.Build.Mac.Pool)
+    timeoutInMinutes: 240
+    cancelTimeoutInMinutes: 5
+    workspace:
+      clean: all
+    variables:
+      ApkTestConfiguration: Release
+    steps:
+    - task: DownloadPipelineArtifact@1
+      inputs:
+        artifactName: $(InstallerArtifactName)
+        itemPattern: "*.pkg"
+        downloadPath: $(System.DefaultWorkingDirectory)
+
+    - template: yaml-templates/run-installer.yaml
+
+    - task: MSBuild@1
+      displayName: build xaprepare
+      inputs:
+        solution: build-tools/xaprepare/xaprepare.sln
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: /t:Restore,Build
+
+    - script: |
+        mono build-tools/xaprepare/xaprepare/bin/$(ApkTestConfiguration)/xaprepare.exe --s=UpdateMono --auto-provision=yes --auto-provision-uses-sudo=yes --no-emoji --run-mode=CI
+        mono build-tools/xaprepare/xaprepare/bin/$(ApkTestConfiguration)/xaprepare.exe --s=Required --auto-provision=yes --auto-provision-uses-sudo=yes --no-emoji --run-mode=CI
+        mono build-tools/xaprepare/xaprepare/bin/$(ApkTestConfiguration)/xaprepare.exe --s=AndroidToolchain --no-emoji --run-mode=CI
+      displayName: provision dependencies
+
+    - task: NuGetCommand@2
+      displayName: nuget restore Xamarin.Android.Tools.sln
+      inputs:
+        restoreSolution: external/xamarin-android-tools/Xamarin.Android.Tools.sln
+
+    - task: MSBuild@1
+      displayName: build Xamarin.Android.Tools.BootstrapTasks.csproj
+      inputs:
+        solution: build-tools/xamarin.Android.Tools.BootstrapTasks/Xamarin.Android.Tools.BootstrapTasks.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: /bl:$(System.DefaultWorkingDirectory)/bin/Test$(ApkTestConfiguration)/BootstrapTasks.binlog
+
+    - task: NuGetCommand@2
+      displayName: nuget restore Xamarin.Android-Tests.sln
+      inputs:
+        restoreSolution: Xamarin.Android-Tests.sln
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Mono.Android_Tests
+        project: src/Mono.Android/Test/Mono.Android-Tests.csproj
+        testResultsFiles: TestResult-Mono.Android_Tests-$(ApkTestConfiguration).xml
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Mono.Android_Tests-Aot
+        project: src/Mono.Android/Test/Mono.Android-Tests.csproj
+        testResultsFiles: TestResult-Mono.Android_Tests-$(ApkTestConfiguration)-Aot.xml
+        extraBuildArgs: /p:AotAssemblies=True /p:EnableLlvm=True
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Mono.Android_Tests-Profiled
+        project: src/Mono.Android/Test/Mono.Android-Tests.csproj
+        testResultsFiles: TestResult-Mono.Android_Tests-$(ApkTestConfiguration)-Profiled.xml
+        extraBuildArgs: /p:AndroidEnableProfiledAot=true
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Mono.Android_Tests-Bundle
+        project: src/Mono.Android/Test/Mono.Android-Tests.csproj
+        testResultsFiles: TestResult-Mono.Android_Tests-$(ApkTestConfiguration)-Bundle.xml
+        extraBuildArgs: /p:BundleAssemblies=true
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Mono.Android_TestsAppBundle
+        project: tests/Runtime-AppBundle/Mono.Android-TestsAppBundle.csproj
+        testResultsFiles: TestResult-Mono.Android_TestsAppBundle-$(ApkTestConfiguration).xml
+        packageType: Aab
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Mono.Android_TestsMultiDex
+        project: tests/Runtime-MultiDex/Mono.Android-TestsMultiDex.csproj
+        testResultsFiles: TestResult-Mono.Android_TestsMultiDex-$(ApkTestConfiguration).xml
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Xamarin.Android.JcwGen_Tests
+        project: tests/CodeGen-Binding/Xamarin.Android.JcwGen-Tests/Xamarin.Android.JcwGen-Tests.csproj
+        testResultsFiles: TestResult-Xamarin.Android.JcwGen_Tests-$(ApkTestConfiguration).xml
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Xamarin.Android.Locale_Tests
+        project: tests/locales/Xamarin.Android.Locale-Tests/Xamarin.Android.Locale-Tests.csproj
+        testResultsFiles: TestResult-Xamarin.Android.Locale_Tests-$(ApkTestConfiguration).xml
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Xamarin.Android.Locale_Tests-Aot
+        project: tests/locales/Xamarin.Android.Locale-Tests/Xamarin.Android.Locale-Tests.csproj
+        testResultsFiles: TestResult-Xamarin.Android.Locale_Tests-$(ApkTestConfiguration)-Aot.xml
+        extraBuildArgs: /p:AotAssemblies=True
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Xamarin.Android.Locale_Tests-Profiled
+        project: tests/locales/Xamarin.Android.Locale-Tests/Xamarin.Android.Locale-Tests.csproj
+        testResultsFiles: TestResult-Xamarin.Android.Locale_Tests-$(ApkTestConfiguration)-Profiled.xml
+        extraBuildArgs: /p:AndroidEnableProfiledAot=true
+
+    - template: yaml-templates/apk-instrumentation.yaml
+      parameters:
+        configuration: $(ApkTestConfiguration)
+        testName: Xamarin.Android.EmbeddedDSO_Test
+        project: tests/EmbeddedDSOs/EmbeddedDSO/EmbeddedDSO.csproj
+        testResultsFiles: TestResult-Xamarin.Android.EmbeddedDSO_Test.nunit-$(ApkTestConfiguration).xml
+
+    - task: MSBuild@1
+      displayName: run Xamarin.Forms-Performance-Integration
+      inputs:
+        solution: tests/Xamarin.Forms-Performance-Integration/Droid/Xamarin.Forms.Performance.Integration.Droid.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: >
+          /t:AcquireAndroidTarget,SignAndroidPackage,UndeployTestApks,DeployTestApks,RunTestApks,ReportComponentFailures
+          /bl:$(System.DefaultWorkingDirectory)/bin/Test$(ApkTestConfiguration)/XamarinFormsPerf.binlog
+      condition: succeededOrFailed()
+
+    - task: MSBuild@1
+      displayName: run Xamarin.Forms-Performance-Integration-Aot
+      inputs:
+        solution: tests/Xamarin.Forms-Performance-Integration/Droid/Xamarin.Forms.Performance.Integration.Droid.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: >
+          /t:AcquireAndroidTarget,SignAndroidPackage,UndeployTestApks,DeployTestApks,RunTestApks,ReportComponentFailures
+          /bl:$(System.DefaultWorkingDirectory)/bin/Test$(ApkTestConfiguration)/XamarinFormsPerf-Aot.binlog
+          /p:AotAssemblies=true
+      condition: succeededOrFailed()
+
+    - task: MSBuild@1
+      displayName: run Xamarin.Forms-Performance-Integration-Profiled
+      inputs:
+        solution: tests/Xamarin.Forms-Performance-Integration/Droid/Xamarin.Forms.Performance.Integration.Droid.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: >
+          /t:AcquireAndroidTarget,SignAndroidPackage,UndeployTestApks,DeployTestApks,RunTestApks,ReportComponentFailures
+          /bl:$(System.DefaultWorkingDirectory)/bin/Test$(ApkTestConfiguration)/XamarinFormsPerf-Profiled.binlog
+          /p:AndroidEnableProfiledAot=true
+      condition: succeededOrFailed()
+
+    - task: MSBuild@1
+      displayName: run Xamarin.Forms-Performance-Integration-Bundle
+      inputs:
+        solution: tests/Xamarin.Forms-Performance-Integration/Droid/Xamarin.Forms.Performance.Integration.Droid.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: >
+          /t:AcquireAndroidTarget,SignAndroidPackage,UndeployTestApks,DeployTestApks,RunTestApks,ReportComponentFailures
+          /bl:$(System.DefaultWorkingDirectory)/bin/Test$(ApkTestConfiguration)/XamarinFormsPerf-Bundle.binlog
+          /p:BundleAssemblies=true
+      condition: succeededOrFailed()
+
+    - task: MSBuild@1
+      displayName: shut down emulator
+      inputs:
+        solution: src/Mono.Android/Test/Mono.Android-Tests.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: >
+          /t:AcquireAndroidTarget,ReleaseAndroidTarget
+          /bl:$(System.DefaultWorkingDirectory)/bin/Test$(ApkTestConfiguration)/shutdown-emulator.binlog
+      condition: always()
+
+    - task: MSBuild@1
+      displayName: package results
+      inputs:
+        solution: build-tools/xamarin.Android.Tools.BootstrapTasks/Xamarin.Android.Tools.BootstrapTasks.csproj
+        configuration: $(ApkTestConfiguration)
+        msbuildArguments: /t:Build,ZipBuildStatus,ZipTestResults /p:BuildStatusZipOutputPath=$(Build.ArtifactStagingDirectory) /p:TestResultZipOutputPath=$(Build.ArtifactStagingDirectory)
+      condition: always()
+
+    - task: PublishPipelineArtifact@0
+      displayName: upload artifacts
+      inputs:
+        artifactName: mac-apk-test-results
+        targetPath: $(Build.ArtifactStagingDirectory)
+      condition: always()
+
+  # Test Designer Mac  
+  - job: designer_integration_mac
+    displayName: Designer Mac
+    pool: $(XA.Build.Mac.Pool)
+    timeoutInMinutes: 120
+    cancelTimeoutInMinutes: 5
+    workspace:
+      clean: all
+    variables:
+      EnableRegressionTest: true
+    steps:
+    - script: |
+        git clone -q https://$(GitHub.Token)@github.com/xamarin/designer.git
+        cd designer
+        git submodule update -q --init --recursive
+      displayName: Clone and update designer
+
+    - task: provisionator@2
+      displayName: provision designer dependencies
+      inputs:
+        github_token: $(GitHub.Token)
+        provisioning_script: $(System.DefaultWorkingDirectory)/designer/bot-provisioning/dependencies.csx
+        provisioning_extra_args: -remove Xamarin.Android -vv
+
+    - task: DownloadPipelineArtifact@1
+      inputs:
+        artifactName: $(InstallerArtifactName)
+        itemPattern: "*.pkg"
+        downloadPath: $(System.DefaultWorkingDirectory)
+
+    - template: yaml-templates/run-installer.yaml
+
+    - template: designer/android-designer-build-mac.yaml@yaml
+      parameters:
+        designerSourcePath: $(System.DefaultWorkingDirectory)/designer
+
+    - template: designer/android-designer-tests.yaml@yaml
+      parameters:
+        designerSourcePath: $(System.DefaultWorkingDirectory)/designer
+
+  # Test Designer Windows
+  - job: designer_integration_win
+    displayName: Designer Windows
+    pool:
+      name: VSEng-Xamarin-QA
+      demands: XQA.XA.Deviceless.Win
+    timeoutInMinutes: 120
+    cancelTimeoutInMinutes: 5
+    workspace:
+      clean: all
+    variables:
+      EnableRegressionTest: true
+      RegressionTestSuiteOutputDir: C:\Git\ADesRegTestSuite
+      XQA_VISUALSTUDIO_LOCATION: C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise
+      VCINSTALLDIR: $(XQA_VISUALSTUDIO_LOCATION)\VC\
+      VisualStudioVersion: 15.0
+    steps:
+    - script: |
+        git clone -q https://$(GitHub.Token)@github.com/xamarin/designer.git
+        cd designer
+        git submodule update -q --init --recursive
+      displayName: Clone and update designer
+
+    - task: provisionator@2
+      displayName: provision designer dependencies
+      inputs:
+        github_token: $(GitHub.Token)
+        provisioning_script: $(System.DefaultWorkingDirectory)\designer\bot-provisioning\dependencies.csx
+        provisioning_extra_args: '-remove "Visual Studio extension Xamarin.Android.Sdk" -vv'
+
+    - task: DownloadPipelineArtifact@1
+      inputs:
+        artifactName: $(InstallerArtifactName)
+        itemPattern: "*.vsix"
+        downloadPath: $(System.DefaultWorkingDirectory)
+
+    - template: yaml-templates\run-installer.yaml
+
+    - template: designer\android-designer-build-win.yaml@yaml
+      parameters:
+        designerSourcePath: $(System.DefaultWorkingDirectory)\designer
+
+    - template: designer\android-designer-tests.yaml@yaml
+      parameters:
+        designerSourcePath: $(System.DefaultWorkingDirectory)\designer

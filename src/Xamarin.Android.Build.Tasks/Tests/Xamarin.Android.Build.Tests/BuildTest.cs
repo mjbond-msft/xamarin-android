@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -38,11 +38,12 @@ namespace Xamarin.Android.Build.Tests
 		}
 
 		[Test]
-		public void BuildHasNoWarnings ([Values (true, false)] bool isRelease)
+		public void BuildHasNoWarnings ([Values (true, false)] bool isRelease, [Values (true, false)] bool xamarinForms)
 		{
-			var proj = new XamarinAndroidApplicationProject {
-				IsRelease = isRelease,
-			};
+			var proj = xamarinForms ?
+				new XamarinFormsAndroidApplicationProject () :
+				new XamarinAndroidApplicationProject ();
+			proj.IsRelease = isRelease;
 			using (var b = CreateApkBuilder (Path.Combine ("temp", TestName))) {
 				Assert.IsTrue (b.Build (proj), "Build should have succeeded.");
 				Assert.IsTrue (StringAssertEx.ContainsText (b.LastBuildOutput, "0 Warning(s)"), "Should have zero MSBuild warnings.");
@@ -193,14 +194,13 @@ class MemTest {
 					"Xamarin.Android.Support.Design.dll",
 					"Xamarin.Android.Support.Media.Compat.dll",
 					"Xamarin.Android.Support.Transition.dll",
-					"Xamarin.Android.Support.v4.dll",
 					"Xamarin.Android.Support.v7.AppCompat.dll",
 					"Xamarin.Android.Support.v7.CardView.dll",
 					"Xamarin.Android.Support.v7.MediaRouter.dll",
 					"Xamarin.Android.Support.v7.RecyclerView.dll",
 					"material-menu-1.1.0.aar",
 				};
-				foreach (var file in skipped) {
+				foreach (var file in files) {
 					Assert.IsTrue (StringAssertEx.ContainsText (skipped, file), $"`{target}` should skip `{file}`.");
 				}
 			}
@@ -3715,16 +3715,24 @@ AAAAAAAAAAAAPQAAAE1FVEEtSU5GL01BTklGRVNULk1GUEsBAhQAFAAICAgAJZFnS7uHtAn+AQAA
 					"_CompileJava",
 				};
 				Assert.IsTrue (b.Output.IsTargetSkipped (targets [0]), $"`{targets [0]}` should be skipped.");
-				var oldMonoPackageManager = Path.Combine (Root, b.ProjectDirectory, proj.IntermediateOutputPath, "android", "src", "mono", "MonoPackageManager.java");
-				var notifyTimeZoneChanges = Path.Combine (Root, b.ProjectDirectory, proj.IntermediateOutputPath, "android", "src", "mono", "android", "app", "NotifyTimeZoneChanges.java");
+				var intermediate = Path.Combine (Root, b.ProjectDirectory, proj.IntermediateOutputPath);
+				var oldMonoPackageManager = Path.Combine (intermediate, "android", "src", "mono", "MonoPackageManager.java");
+				var seppuku = Path.Combine (intermediate, "android", "src", "mono", "android", "Seppuku.java");
+				var notifyTimeZoneChanges = Path.Combine (intermediate, "android", "src", "mono", "android", "app", "NotifyTimeZoneChanges.java");
+				Directory.CreateDirectory (Path.GetDirectoryName (seppuku));
 				Directory.CreateDirectory (Path.GetDirectoryName (notifyTimeZoneChanges));
 				File.WriteAllText (oldMonoPackageManager, @"package mono;
 public class MonoPackageManager { }
 class MonoPackageManager_Resources { }");
+				File.WriteAllText (seppuku, @"package mono.android;
+public class Seppuku { }");
 				File.WriteAllText (notifyTimeZoneChanges, @"package mono.android.app;
 public class ApplicationRegistration { }");
-				var oldMonoPackageManagerClass = Path.Combine (Root, b.ProjectDirectory, proj.IntermediateOutputPath, "android", "bin", "classes" , "mono", "MonoPackageManager.class");
+				var oldMonoPackageManagerClass = Path.Combine (intermediate, "android", "bin", "classes" , "mono", "MonoPackageManager.class");
+				var seppukuClass = Path.Combine (intermediate, "android", "bin", "classes", "mono", "android", "Seppuku.class");
+				Directory.CreateDirectory (Path.GetDirectoryName (seppukuClass));
 				File.WriteAllText (oldMonoPackageManagerClass, "");
+				File.WriteAllText (seppukuClass, "");
 				Assert.IsTrue (b.Build (proj), "Build should have succeeded.");
 				foreach (var target in targets) {
 					Assert.IsFalse (b.Output.IsTargetSkipped (target), $"`{target}` should *not* be skipped.");
@@ -3732,10 +3740,12 @@ public class ApplicationRegistration { }");
 				// Old files that should *not* exist
 				FileAssert.DoesNotExist (oldMonoPackageManager);
 				FileAssert.DoesNotExist (oldMonoPackageManagerClass);
+				FileAssert.DoesNotExist (seppuku);
+				FileAssert.DoesNotExist (seppukuClass);
 				FileAssert.DoesNotExist (notifyTimeZoneChanges);
 				// New files that should exist
-				var monoPackageManager_Resources = Path.Combine (Root, b.ProjectDirectory, proj.IntermediateOutputPath, "android", "src", "mono", "MonoPackageManager_Resources.java");
-				var monoPackageManager_ResourcesClass = Path.Combine (Root, b.ProjectDirectory, proj.IntermediateOutputPath, "android", "bin", "classes", "mono", "MonoPackageManager_Resources.class");
+				var monoPackageManager_Resources = Path.Combine (intermediate, "android", "src", "mono", "MonoPackageManager_Resources.java");
+				var monoPackageManager_ResourcesClass = Path.Combine (intermediate, "android", "bin", "classes", "mono", "MonoPackageManager_Resources.class");
 				FileAssert.Exists (monoPackageManager_Resources);
 				FileAssert.Exists (monoPackageManager_ResourcesClass);
 			}
@@ -3796,6 +3806,64 @@ public class ApplicationRegistration { }");
 			using (var b = CreateDllBuilder (Path.Combine ("temp", TestName))) {
 				Assert.IsTrue (b.Build (proj), "Build should have succeeded.");
 				Assert.IsTrue (b.Output.IsTargetSkipped (target), $"`{target}` should be skipped!");
+			}
+		}
+
+		[Test]
+		public void AllResourcesInClassLibrary ([Values (true, false)] bool useAapt2)
+		{
+			var path = Path.Combine ("temp", TestName);
+
+			// Create a "library" with all the application stuff in it
+			var lib = new XamarinAndroidApplicationProject {
+				ProjectName = "MyLibrary",
+				Sources = {
+					new BuildItem.Source ("Bar.cs") {
+						TextContent = () => "public class Bar { }"
+					},
+				}
+			};
+			lib.SetProperty ("AndroidApplication", "False");
+			lib.SetProperty ("AndroidUseAapt2", useAapt2.ToString ());
+
+			// Create an "app" that is basically empty and references the library
+			var app = new XamarinAndroidLibraryProject {
+				ProjectName = "MyApp",
+				Sources = {
+					new BuildItem.Source ("Foo.cs") {
+						TextContent = () => "public class Foo : Bar { }"
+					},
+				}
+			};
+			app.AndroidResources.Clear (); // No Resources
+			app.SetProperty ("AndroidResgenFile", "Resources\\Resource.designer.cs");
+			app.SetProperty ("AndroidApplication", "True");
+			app.SetProperty ("AndroidUseAapt2", useAapt2.ToString ());
+
+			app.References.Add (new BuildItem.ProjectReference ($"..\\{lib.ProjectName}\\{lib.ProjectName}.csproj", lib.ProjectName, lib.ProjectGuid));
+
+			using (var libBuilder = CreateDllBuilder (Path.Combine (path, lib.ProjectName)))
+			using (var appBuilder = CreateApkBuilder (Path.Combine (path, app.ProjectName))) {
+				Assert.IsTrue (libBuilder.Build (lib), "library build should have succeeded.");
+				Assert.IsTrue (appBuilder.Build (app), "app build should have succeeded.");
+
+				var r_txt = Path.Combine (Root, appBuilder.ProjectDirectory, app.IntermediateOutputPath, "R.txt");
+				FileAssert.Exists (r_txt);
+
+				var resource_designer_cs = Path.Combine (Root, appBuilder.ProjectDirectory, "Resources", "Resource.designer.cs");
+				FileAssert.Exists (resource_designer_cs);
+				var contents = File.ReadAllText (resource_designer_cs);
+				Assert.AreNotEqual ("", contents);
+			}
+		}
+
+		[Test]
+		public void AbiDelimiters ([Values ("armeabi-v7a%3bx86", "armeabi-v7a,x86")] string abis)
+		{
+			var proj = new XamarinAndroidApplicationProject ();
+			proj.SetProperty (KnownProperties.AndroidSupportedAbis, abis);
+			using (var b = CreateApkBuilder (Path.Combine ("temp", $"{nameof (AbiDelimiters)}_{abis.GetHashCode ()}"))) {
+				Assert.IsTrue (b.Build (proj), "Build should have succeeded.");
 			}
 		}
 	}

@@ -9,9 +9,7 @@
 #include <libgen.h>
 #include <errno.h>
 
-extern "C" {
 #include "java-interop-util.h"
-}
 
 #include "monodroid.h"
 #include "dylib-mono.h"
@@ -399,6 +397,19 @@ EmbeddedAssemblies::gather_bundled_assemblies_from_apk (const char* apk, monodro
 					unzGetRawFileOffset (file, &offset) != UNZ_OK) {
 				continue;
 			}
+
+#if defined (DEBUG)
+			if (utils.ends_with (cur_entry_name, ".jm")) {
+				md_mmap_info map_info   = md_mmap_apk_file (fd, offset, info.uncompressed_size, cur_entry_name, apk);
+				add_type_mapping (&java_to_managed_maps, apk, cur_entry_name, (const char*)map_info.area);
+				continue;
+			}
+			if (utils.ends_with (cur_entry_name, ".mj")) {
+				md_mmap_info map_info   = md_mmap_apk_file (fd, offset, info.uncompressed_size, cur_entry_name, apk);
+				add_type_mapping (&managed_to_java_maps, apk, cur_entry_name, (const char*)map_info.area);
+				continue;
+			}
+#endif
 
 			const char *prefix = get_assemblies_prefix();
 			if (strncmp (prefix, cur_entry_name, strlen (prefix)) != 0)
