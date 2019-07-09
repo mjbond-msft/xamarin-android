@@ -175,7 +175,7 @@ stages:
     displayName: Queue Vsix Signing
     dependsOn: mac_build_create_installers
     pool: $(XA.Build.Win.Pool)
-    condition: and(eq(variables['XA.Commercial.Build'], 'true'), ne(variables['Build.Reason'], 'PullRequest'))
+    condition: and(eq(variables['XA.Commercial.Build'], 'true'), ne(variables['Build.Reason'], 'PullRequest'), ne(variables['XA.Pipeline.SkipSigning'], 'true'))
     timeoutInMinutes: 30
     cancelTimeoutInMinutes: 1
     workspace:
@@ -202,6 +202,7 @@ stages:
   - job: win_build_test
     displayName: Build and Test
     pool: $(XA.Build.Win.Pool)
+    condition: ne(variables['XA.Pipeline.SkipTests'], 'true')
     timeoutInMinutes: 360
     cancelTimeoutInMinutes: 5
     workspace:
@@ -296,7 +297,8 @@ stages:
   # Check - "Xamarin.Android (Test APK Instrumentation)"
   - job: mac_apk_tests
     displayName: APK Instrumentation
-    pool: $(XA.Build.Mac.Pool)
+    pool: $(XA.Test.Mac.Pool)
+    condition: ne(variables['XA.Pipeline.SkipTests'], 'true')
     timeoutInMinutes: 240
     cancelTimeoutInMinutes: 5
     workspace:
@@ -496,7 +498,7 @@ stages:
   # Check - "Xamarin.Android (Test Designer Mac)"
   - job: designer_integration_mac
     displayName: Designer Mac
-    pool: $(XA.Build.Mac.Pool)
+    pool: $(XA.Test.Mac.Pool)
     timeoutInMinutes: 120
     cancelTimeoutInMinutes: 5
     workspace:
