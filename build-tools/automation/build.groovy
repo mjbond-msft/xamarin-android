@@ -1,3 +1,5 @@
+// UNDONE: Bogus comment as change to pr-eval branch - should not trigger build as whitelist set to d16-0
+// UNDONE: Another bogus comment as change to pr-eval branch
 // This file is based on the Jenkins scripted pipeline (as opposed to the declarative pipeline) syntax
 // https://jenkins.io/doc/book/pipeline/syntax/#scripted-pipeline
 def XADir = 'xamarin-android'
